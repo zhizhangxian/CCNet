@@ -1,5 +1,10 @@
 #import encoding.nn as nn
 #import encoding.functions as F
+import os
+import sys
+from cc_attention import CrissCrossAttention
+from libs import InPlaceABN, InPlaceABNSync
+import functools
 import torch.nn as nn
 from torch.nn import functional as F
 import math
@@ -8,15 +13,10 @@ import torch
 import numpy as np
 from torch.autograd import Variable
 affine_par = True
-import functools
-
-import sys, os
-
-from libs import InPlaceABN, InPlaceABNSync
-from cc_attention import CrissCrossAttention
 
 
 BatchNorm2d = functools.partial(InPlaceABNSync, activation='none')
+
 
 def outS(i):
     i = int(i)
@@ -24,6 +24,7 @@ def outS(i):
     i = int(np.ceil((i+1)/2.0))
     i = (i+1)/2
     return i
+
 
 def conv3x3(in_planes, out_planes, stride=1):
     "3x3 convolution with padding"
@@ -33,7 +34,8 @@ def conv3x3(in_planes, out_planes, stride=1):
 
 class Bottleneck(nn.Module):
     expansion = 4
-    def __init__(self, inplanes, planes, stride=1, dilation=1, downsample=None, fist_dilation=1, multi_grid=1):
+
+    def __init__(self, inplanes, planes, stride=1, dilation=1, downsample=None, multi_grid=1):
         super(Bottleneck, self).__init__()
         self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
         self.bn1 = BatchNorm2d(planes)
@@ -65,26 +67,30 @@ class Bottleneck(nn.Module):
         if self.downsample is not None:
             residual = self.downsample(x)
 
-        out = out + residual      
+        out = out + residual
         out = self.relu_inplace(out)
 
         return out
+
 
 class PSPModule(nn.Module):
     """
     Reference: 
         Zhao, Hengshuang, et al. *"Pyramid scene parsing network."*
     """
+
     def __init__(self, features, out_features=512, sizes=(1, 2, 3, 6)):
         super(PSPModule, self).__init__()
 
         self.stages = []
-        self.stages = nn.ModuleList([self._make_stage(features, out_features, size) for size in sizes])
+        self.stages = nn.ModuleList(
+            [self._make_stage(features, out_features, size) for size in sizes])
         self.bottleneck = nn.Sequential(
-            nn.Conv2d(features+len(sizes)*out_features, out_features, kernel_size=3, padding=1, dilation=1, bias=False),
+            nn.Conv2d(features+len(sizes)*out_features, out_features,
+                      kernel_size=3, padding=1, dilation=1, bias=False),
             InPlaceABNSync(out_features),
             nn.Dropout2d(0.1)
-            )
+        )
 
     def _make_stage(self, features, out_features, size):
         prior = nn.AdaptiveAvgPool2d(output_size=(size, size))
@@ -94,9 +100,11 @@ class PSPModule(nn.Module):
 
     def forward(self, feats):
         h, w = feats.size(2), feats.size(3)
-        priors = [F.upsample(input=stage(feats), size=(h, w), mode='bilinear', align_corners=True) for stage in self.stages] + [feats]
+        priors = [F.upsample(input=stage(feats), size=(
+            h, w), mode='bilinear', align_corners=True) for stage in self.stages] + [feats]
         bottle = self.bottleneck(torch.cat(priors, 1))
         return bottle
+
 
 class RCCAModule(nn.Module):
     def __init__(self, in_channels, out_channels, num_classes):
@@ -109,11 +117,13 @@ class RCCAModule(nn.Module):
                                    InPlaceABNSync(inter_channels))
 
         self.bottleneck = nn.Sequential(
-            nn.Conv2d(in_channels+inter_channels, out_channels, kernel_size=3, padding=1, dilation=1, bias=False),
+            nn.Conv2d(in_channels+inter_channels, out_channels,
+                      kernel_size=3, padding=1, dilation=1, bias=False),
             InPlaceABNSync(out_channels),
             nn.Dropout2d(0.1),
-            nn.Conv2d(512, num_classes, kernel_size=1, stride=1, padding=0, bias=True)
-            )
+            nn.Conv2d(512, num_classes, kernel_size=1,
+                      stride=1, padding=0, bias=True)
+        )
 
     def forward(self, x, recurrence=1):
         output = self.conva(x)
@@ -123,6 +133,7 @@ class RCCAModule(nn.Module):
 
         output = self.bottleneck(torch.cat([x, output], 1))
         return output
+
 
 class ResNet(nn.Module):
     def __init__(self, block, layers, num_classes):
@@ -140,11 +151,14 @@ class ResNet(nn.Module):
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
         self.relu = nn.ReLU(inplace=False)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1, ceil_mode=True) # change
+        self.maxpool = nn.MaxPool2d(
+            kernel_size=3, stride=2, padding=1, ceil_mode=True)  # change
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=1, dilation=2)
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=1, dilation=4, multi_grid=(1,1,1))
+        self.layer3 = self._make_layer(
+            block, 256, layers[2], stride=1, dilation=2)
+        self.layer4 = self._make_layer(
+            block, 512, layers[3], stride=1, dilation=4, multi_grid=(1, 1, 1))
         #self.layer5 = PSPModule(2048, 512)
         self.head = RCCAModule(2048, 512, num_classes)
 
@@ -152,10 +166,11 @@ class ResNet(nn.Module):
             nn.Conv2d(1024, 512, kernel_size=3, stride=1, padding=1),
             InPlaceABNSync(512),
             nn.Dropout2d(0.1),
-            nn.Conv2d(512, num_classes, kernel_size=1, stride=1, padding=0, bias=True)
-            )
+            nn.Conv2d(512, num_classes, kernel_size=1,
+                      stride=1, padding=0, bias=True)
+        )
 
-    def get_learnable_parameters(self, freeze_layers=[True,True,True,True,False,False,False]):
+    def get_learnable_parameters(self, freeze_layers=[True, True, True, True, False, False, False]):
         lr_parameters = []
 
         if not freeze_layers[0]:
@@ -165,7 +180,8 @@ class ResNet(nn.Module):
                     print(name)
                     lr_parameters.append(p)
 
-        layers = [self.layer1, self.layer2, self.layer3, self.layer4, self.layer5, self.layer6]
+        layers = [self.layer1, self.layer2, self.layer3,
+                  self.layer4, self.layer5, self.layer6]
         for freeze, layer in zip(freeze_layers[1:], layers):
             if not freeze:
                 params = layer.named_parameters()
@@ -181,14 +197,17 @@ class ResNet(nn.Module):
             downsample = nn.Sequential(
                 nn.Conv2d(self.inplanes, planes * block.expansion,
                           kernel_size=1, stride=stride, bias=False),
-                BatchNorm2d(planes * block.expansion,affine = affine_par))
+                BatchNorm2d(planes * block.expansion, affine=affine_par))
 
         layers = []
-        generate_multi_grid = lambda index, grids: grids[index%len(grids)] if isinstance(grids, tuple) else 1
-        layers.append(block(self.inplanes, planes, stride,dilation=dilation, downsample=downsample, multi_grid=generate_multi_grid(0, multi_grid)))
+        def generate_multi_grid(index, grids): return grids[index % len(
+            grids)] if isinstance(grids, tuple) else 1
+        layers.append(block(self.inplanes, planes, stride, dilation=dilation,
+                            downsample=downsample, multi_grid=generate_multi_grid(0, multi_grid)))
         self.inplanes = planes * block.expansion
         for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes, dilation=dilation, multi_grid=generate_multi_grid(i, multi_grid)))
+            layers.append(block(self.inplanes, planes, dilation=dilation,
+                                multi_grid=generate_multi_grid(i, multi_grid)))
 
         return nn.Sequential(*layers)
 
@@ -207,6 +226,18 @@ class ResNet(nn.Module):
 
 
 def Res_Deeplab(num_classes=21):
-    model = ResNet(Bottleneck,[3, 4, 23, 3], num_classes)
+    model = ResNet(Bottleneck, [3, 4, 23, 3], num_classes)
     return model
 
+
+def main():
+    model = Res_Deeplab(3)
+    x = torch.randn(1, 3, 128, 128)
+    from thop import profile
+    params, flops = profile(model, inputs=(x,))
+    print(params)
+    print(flops)
+
+
+if __name__ == "__main__":
+    main()
